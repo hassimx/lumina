@@ -1,0 +1,26 @@
+# Скопируй в .env и заполни. .env НЕ коммить в git.
+
+# ОБЯЗАТЕЛЬНО: ключ Gemini API (aistudio.google.com/apikey)
+GEMINI_API_KEY=вставь_сюда_ключ
+
+# Необязательно — значения по умолчанию ниже.
+LIGHT_MODEL=gemini-2.5-flash-lite
+POWER_MODEL=gemini-2.5-flash
+
+# Fallback-модели через запятую: если основная недоступна, пробуются по порядку.
+LIGHT_FALLBACKS=gemini-2.5-flash
+POWER_FALLBACKS=gemini-2.5-pro
+
+CHUNK_SIZE=300
+TOP_K=3
+# Пауза между вызовами модели при извлечении. На free-tier лимиты ниже,
+# так что при большом наплыве запросов имеет смысл увеличить (например до 2).
+CHUNK_DELAY=0.5
+
+# Насколько бустить узел, чей тип совпал с намерением вопроса (type-aware ретрив).
+# 0 = выключить буст и вернуться к чистому косинусу. 0.25 = +25%.
+TYPE_BOOST=0.25
+
+# Домены фронта через запятую (для CORS). * = разрешить всё (только для разработки).
+# Прод-пример: ALLOWED_ORIGINS=https://lumina.uz,https://lum.pages.dev
+ALLOWED_ORIGINS=*
