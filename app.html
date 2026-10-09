@@ -1,16 +1,10 @@
 """
-Lum / Lumina — ядро GraphRAG пайплайна (веб-версия).
+Lumina: ядро GraphRAG-пайплайна для веб-версии.
 
-Отличия от консольного graphrag_vectors.py:
-  • Ключ Gemini читается из переменной окружения GEMINI_API_KEY (не хардкод).
-  • Убраны print-спам, запись в файлы и matplotlib-визуализация — это не нужно API.
-  • run_pipeline() возвращает чистый dict, готовый к отдаче как JSON.
-  • Добавлен "explain path" — какие узлы/рёбра привели к ответу (для подсветки в графе).
-
-Датафлоу:
-  Текст → чанки → сущности+связи (LIGHT) → граф+векторы
-       → глобальная память (LIGHT) → векторный поиск топ-K
-       → ответ + схема (POWER)
+Текст режем на чанки, из них достаём сущности и связи, строим граф
+с векторами и собираем общую память. Потом ищем узлы, ближе всего к вопросу,
+и по ним просим модель написать ответ и схему. Лёгкая модель (LIGHT) делает
+извлечение и память, мощная (POWER) пишет ответ. Ключ берётся из GEMINI_API_KEY.
 """
 
 import re
@@ -21,17 +15,16 @@ import os
 import requests
 from collections import defaultdict
 
-# ─── КОНФИГ ───────────────────────────────────────────────────────────────────
+# настройки
 
 GROQ_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_URL     = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
-# Основные модели — теперь Gemini (через его OpenAI-совместимый эндпоинт,
-# поэтому call_llm/_call_one_model менять не пришлось).
+# Gemini через OpenAI-совместимый эндпоинт, поэтому call_llm остался как был
 LIGHT_MODEL  = os.environ.get("LIGHT_MODEL", "gemini-2.5-flash-lite")
 POWER_MODEL  = os.environ.get("POWER_MODEL", "gemini-2.5-flash")
 
-# Fallback-модели: если основная вернула ошибку/недоступна, пробуем эти по порядку.
+# если основная модель не отвечает, пробуем эти по порядку
 LIGHT_FALLBACKS = [m.strip() for m in os.environ.get(
     "LIGHT_FALLBACKS", "gemini-2.5-flash").split(",") if m.strip()]
 POWER_FALLBACKS = [m.strip() for m in os.environ.get(
@@ -40,20 +33,19 @@ POWER_FALLBACKS = [m.strip() for m in os.environ.get(
 CHUNK_SIZE   = int(os.environ.get("CHUNK_SIZE", "300"))
 TOP_K        = int(os.environ.get("TOP_K", "3"))
 
-# Пауза между вызовами модели при извлечении. На платном тарифе лимиты выше,
-# поэтому по умолчанию небольшая (быстрее демо). На free-tier подними до 2.
+# пауза между чанками, сек. На платном тарифе хватает 0.5, на бесплатном лучше 2
 CHUNK_DELAY  = float(os.environ.get("CHUNK_DELAY", "0.5"))
 
 
 class PipelineError(Exception):
-    """Ошибка выполнения пайплайна, которую отдаём клиенту как 4xx/5xx."""
+    """Ошибка пайплайна, уходит клиенту как 4xx/5xx"""
 
 
-# ─── ВЫЗОВ LLM ─────────────────────────────────────────────────────────────────
+# вызов модели
 
 def _call_one_model(system: str, user: str, model: str, retries: int = 3) -> str:
-    """Один вызов ОДНОЙ модели с ретраями на rate-limit и таймаут.
-    Бросает PipelineError, если модель так и не ответила."""
+    """Один запрос к одной модели, с повторами при rate limit и таймауте.
+    Если модель так и не ответила, бросает PipelineError."""
     if not GROQ_API_KEY:
         raise PipelineError("GEMINI_API_KEY не задан в переменных окружения")
 
@@ -102,10 +94,9 @@ def _call_one_model(system: str, user: str, model: str, retries: int = 3) -> str
 def call_llm(system: str, user: str, model: str = POWER_MODEL,
              fallbacks: list[str] | None = None, retries: int = 3) -> str:
     """
-    Вызывает модель, а при её недоступности — по очереди fallback-модели.
-    Если fallbacks не переданы, сами подбираем по «весу» модели:
-    POWER_MODEL → POWER_FALLBACKS, иначе → LIGHT_FALLBACKS.
-    Это страховка для живого демо: одна икнувшая модель не роняет весь прогон.
+    Зовёт модель, а если она не отвечает, по очереди пробует запасные.
+    Если fallbacks не переданы, для POWER_MODEL берёт POWER_FALLBACKS,
+    для остальных LIGHT_FALLBACKS.
     """
     if not GROQ_API_KEY:
         raise PipelineError("GEMINI_API_KEY не задан в переменных окружения")
@@ -113,7 +104,7 @@ def call_llm(system: str, user: str, model: str = POWER_MODEL,
     if fallbacks is None:
         fallbacks = POWER_FALLBACKS if model == POWER_MODEL else LIGHT_FALLBACKS
 
-    # порядок попыток: основная модель, затем fallback'и (без дублей)
+    # сначала основная, потом запасные без повторов
     chain = [model] + [m for m in fallbacks if m != model]
 
     last_error: Exception | None = None
@@ -122,16 +113,16 @@ def call_llm(system: str, user: str, model: str = POWER_MODEL,
             return _call_one_model(system, user, m, retries=retries)
         except PipelineError as e:
             last_error = e
-            # нет ключа — сменой модели не лечится, дальше не пробуем
+            # без ключа другие модели не помогут
             if "GEMINI_API_KEY" in str(e):
                 raise
-            # иначе пробуем следующую модель в цепочке
+            # иначе идём к следующей модели
             if i < len(chain) - 1:
                 continue
     raise PipelineError(f"Все модели недоступны. Последняя ошибка: {last_error}")
 
 
-# ─── ВЕКТОРЫ (hash-based эмбеддинги без внешних библиотек) ────────────────────
+# векторы: простые эмбеддинги на хешах, без внешних библиотек
 
 def text_to_vector(text: str, dim: int = 64) -> list[float]:
     vector = [0.0] * dim
@@ -159,14 +150,14 @@ def merge_vectors(vectors: list[list[float]]) -> list[float]:
     return [v / magnitude for v in merged]
 
 
-# ─── ШАГ 1: ЧАНКИ ─────────────────────────────────────────────────────────────
+# шаг 1: чанки
 
 def step1_chunk(text: str) -> list[str]:
     words = text.strip().split()
     return [" ".join(words[i:i + CHUNK_SIZE]) for i in range(0, len(words), CHUNK_SIZE)]
 
 
-# ─── ШАГ 2: ИЗВЛЕЧЕНИЕ СУЩНОСТЕЙ ─────────────────────────────────────────────
+# шаг 2: сущности и связи
 
 def step2_extract_entities(chunks: list[str]) -> list[dict]:
     all_entities = []
@@ -197,13 +188,13 @@ def step2_extract_entities(chunks: list[str]) -> list[dict]:
                 r["to"]   = f"c{i}_{r['to']}"
             all_entities.append(parsed)
         except json.JSONDecodeError:
-            pass  # пропускаем битый чанк, не роняем весь прогон
+            pass  # битый чанк пропускаем, остальные обработаем
         if CHUNK_DELAY:
             time.sleep(CHUNK_DELAY)
     return all_entities
 
 
-# ─── ШАГ 3: ГРАФ + ВЕКТОРЫ ────────────────────────────────────────────────────
+# шаг 3: граф и векторы
 
 def step3_build_graph_with_vectors(extracted: list[dict]) -> dict:
     nodes, edges, name_to_id = {}, [], {}
@@ -246,7 +237,7 @@ def step3_build_graph_with_vectors(extracted: list[dict]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-# ─── ШАГ 4: ГЛОБАЛЬНАЯ ПАМЯТЬ ─────────────────────────────────────────────────
+# шаг 4: общая память
 
 def step4_memory(graph: dict) -> str:
     top_nodes = sorted(graph["nodes"].values(), key=lambda x: x["mentions"], reverse=True)[:12]
@@ -264,20 +255,17 @@ def step4_memory(graph: dict) -> str:
     )
 
 
-# ─── ШАГ 5: ВЕКТОРНЫЙ ПОИСК (type-aware) ──────────────────────────────────────
+# шаг 5: векторный поиск с учётом типа узла
 #
-# Идея из «Memory Matters» (AAAI): чистый similarity-поиск деградирует, если
-# не учитывать ТИП того, что ищем. Метаданные (здесь — тип узла графа)
-# работают как дополнительный фильтр/буст поверх косинуса.
-#
-# Мы определяем «намерение» вопроса по ключевым словам и слегка повышаем скор
-# узлов подходящего типа. Это не заменяет векторный поиск, а корректирует его.
+# Идея из статьи «Memory Matters» (AAAI): если искать только по сходству,
+# выходит хуже, чем когда учитываешь тип того, что ищешь. Поэтому по ключевым
+# словам в вопросе угадываем нужный тип и слегка повышаем скор таких узлов.
+# Поиск по косинусу это не заменяет, а только подправляет.
 
-# Насколько бустить узел правильного типа (0.25 = +25% к скору). В env: TYPE_BOOST.
+# на сколько повышаем скор узла нужного типа (0.25 = +25%), задаётся через TYPE_BOOST
 TYPE_BOOST = float(os.environ.get("TYPE_BOOST", "0.25"))
 
-# Маркеры намерения вопроса → какой тип узла релевантен.
-# Порядок важен: первый сработавший маркер выигрывает.
+# слова в вопросе -> какой тип узла искать. Порядок важен: срабатывает первый подходящий
 _INTENT_MARKERS: list[tuple[str, tuple[str, ...]]] = [
     ("person", ("кто ", "кем ", "автор", "предложил", "изобрел", "изобрёл",
                 "создал", "разработал", "who ")),
@@ -290,8 +278,8 @@ _INTENT_MARKERS: list[tuple[str, tuple[str, ...]]] = [
 
 
 def detect_query_intent(query: str) -> str | None:
-    """Грубо определяет, узел какого типа вероятнее всего отвечает на вопрос.
-    Возвращает тип ('person'|'method'|'term'|'concept') или None, если непонятно."""
+    """Угадывает по словам в вопросе, какой тип узла нужен: person, method, term или concept.
+    Если непонятно, возвращает None."""
     q = query.lower()
     for node_type, markers in _INTENT_MARKERS:
         if any(m in q for m in markers):
@@ -306,9 +294,9 @@ def step5_vector_retrieval(graph: dict, query: str) -> list[dict]:
     scored = []
     for node in graph["nodes"].values():
         sim = cosine_similarity(query_vector, node["merged_vector"])
-        # базовый скор: сходство × буст за частоту упоминаний
+        # сходство, чуть выше для узлов, которые упоминаются чаще
         final_score = sim * (1 + 0.1 * node["mentions"])
-        # type-aware буст: если тип узла совпал с намерением вопроса
+        # если тип узла совпал с тем, что спрашивают, повышаем скор
         type_matched = intent_type is not None and node.get("type") == intent_type
         if type_matched:
             final_score *= (1 + TYPE_BOOST)
@@ -316,18 +304,18 @@ def step5_vector_retrieval(graph: dict, query: str) -> list[dict]:
             **node,
             "similarity":   round(sim, 4),
             "final_score":  final_score,
-            "type_matched": type_matched,   # ← для explainability / демо
+            "type_matched": type_matched,   # нужно для объяснения ответа
         })
 
     scored.sort(key=lambda x: x["final_score"], reverse=True)
     top = scored[:TOP_K]
-    # прикрепим определённое намерение к каждому узлу (пригодится выше по стеку)
+    # кладём намерение в каждый узел, потом оно попадает в explanation
     for n in top:
         n["query_intent"] = intent_type
     return top
 
 
-# ─── ШАГ 6: ОТВЕТ + СХЕМА ─────────────────────────────────────────────────────
+# шаг 6: ответ и схема
 
 def step6_reason_and_generate(memory: str, top_nodes: list[dict], graph: dict, query: str) -> list[dict]:
     top_ids = {n["id"] for n in top_nodes}
@@ -373,11 +361,11 @@ def step6_generate_answer(memory: str, top_nodes: list[dict], query: str) -> dic
         return {"answer": raw.strip(), "summary": "", "key_points": []}
 
 
-# ─── СЕРИАЛИЗАЦИЯ ГРАФА ДЛЯ ФРОНТА ────────────────────────────────────────────
+# граф для фронта
 
 def serialize_graph(graph: dict, top_ids: set[str]) -> dict:
-    """Готовит граф к отдаче: убирает тяжёлые векторы, помечает узлы/рёбра,
-    попавшие в ответ (для подсветки 'пути рассуждения' на фронте)."""
+    """Готовит граф для ответа: выкидывает тяжёлые векторы и помечает узлы
+    и рёбра, которые попали в ответ (фронт их подсвечивает)."""
     nodes = []
     for n in graph["nodes"].values():
         nodes.append({
@@ -386,7 +374,7 @@ def serialize_graph(graph: dict, top_ids: set[str]) -> dict:
             "type":        n["type"],
             "description": n["description"],
             "mentions":    n["mentions"],
-            "in_answer":   n["id"] in top_ids,   # ← фронт подсветит эти узлы
+            "in_answer":   n["id"] in top_ids,   # такие узлы фронт подсвечивает
         })
     edges = []
     for e in graph["edges"]:
@@ -399,18 +387,14 @@ def serialize_graph(graph: dict, top_ids: set[str]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-# ─── ГЛАВНАЯ ФУНКЦИЯ ──────────────────────────────────────────────────────────
+# главная функция
 
 def run_pipeline(text: str, query: str) -> dict:
     """
-    Полный прогон. Возвращает dict, готовый к json-ответу API.
+    Прогоняет весь пайплайн и возвращает dict для json-ответа.
 
-    Ключи ответа:
-      answer      — {answer, summary, key_points}
-      schema      — структурная схема (6-10 узлов)
-      graph       — {nodes, edges} с флагом in_answer для explainable-подсветки
-      explanation — какие именно узлы/рёбра стали "путём" к ответу
-      stats       — метаданные прогона (для отладки/питча)
+    Ключи: answer, schema (6-10 узлов), graph (с флагом in_answer),
+    explanation (узлы и рёбра, которые привели к ответу) и stats.
     """
     if not text or not text.strip():
         raise PipelineError("Пустой текст для анализа")
@@ -430,10 +414,10 @@ def run_pipeline(text: str, query: str) -> dict:
     schema      = step6_reason_and_generate(memory, top_nodes, graph, query)
 
     top_ids = {n["id"] for n in top_nodes}
-    # какое намерение вопроса определила система (одинаково для всех top-узлов)
+    # у всех top-узлов намерение одно и то же, берём из первого
     query_intent = top_nodes[0].get("query_intent") if top_nodes else None
     explanation = {
-        "query_intent": query_intent,   # напр. "person" → система бустила такие узлы
+        "query_intent": query_intent,   # например "person": узлы такого типа получили буст
         "path_nodes": [
             {"id": n["id"], "name": n["name"], "type": n["type"],
              "similarity": n["similarity"],

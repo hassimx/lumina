@@ -13,11 +13,7 @@
 <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 
 <style>
-/* ============================================================================
-   Lumina — визуальная система
-   Идея: «свет в темноте». Граф тускл, пока не найден путь к ответу — тогда
-   узлы и рёбра пути загораются. Всё остальное держим тихим.
-   ========================================================================== */
+/* стили Lumina. Идея: граф тусклый, пока не найден путь к ответу, потом его узлы и рёбра загораются */
 :root{
   --bg:#0B0B16; --bg-2:#10101F; --surface:#15152B; --surface-2:#1C1C3A;
   --line:rgba(124,111,255,.14); --line-2:rgba(124,111,255,.34);
@@ -43,10 +39,10 @@ button{font:inherit;color:inherit;cursor:pointer;border:none;background:none}
 ::selection{background:rgba(124,111,255,.35)}
 .hidden{display:none !important}
 
-/* ---- каркас ---- */
+/* каркас */
 .app{display:grid; grid-template-rows:auto 1fr; height:100dvh}
 
-/* ---- шапка ---- */
+/* шапка */
 header{
   display:flex; align-items:center; gap:18px; padding:14px 22px;
   border-bottom:1px solid var(--line); background:rgba(11,11,22,.55); backdrop-filter:blur(12px);
@@ -59,11 +55,11 @@ header{
 .pill{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 11px;white-space:nowrap}
 .pill b{color:var(--ink);font-weight:600}
 
-/* ---- рабочая область ---- */
+/* рабочая область */
 .work{display:grid; grid-template-columns:minmax(0,1fr) 400px; min-height:0}
 @media (max-width:1080px){ .work{grid-template-columns:1fr; grid-template-rows:1fr auto} }
 
-/* ---- сцена графа ---- */
+/* сцена графа */
 .stage{position:relative; min-height:0; overflow:hidden; border-right:1px solid var(--line)}
 #graph{position:absolute; inset:0}
 @media (max-width:1080px){ .stage{border-right:none;border-bottom:1px solid var(--line);min-height:52dvh} }
@@ -97,7 +93,7 @@ chip-btn{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mute
 .inspector .meta{margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--faint)}
 .inspector .x{position:absolute;top:10px;right:11px;color:var(--faint);font-size:16px;line-height:1}
 
-/* ---- сайдбар результата ---- */
+/* сайдбар результата */
 .side{min-height:0; overflow-y:auto; background:linear-gradient(180deg,var(--bg-2),var(--bg)); padding:18px}
 .side::-webkit-scrollbar{width:9px}
 .side::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:9px;border:2px solid var(--bg-2)}
@@ -136,7 +132,7 @@ row{border-left:2px solid var(--line-2);padding:2px 0 2px 12px}
 .schema .row .d{font-size:12.5px;color:var(--muted);line-height:1.45;margin-top:2px}
 .schema .row .conn{font-size:11.5px;color:var(--faint);margin-top:3px}
 
-/* ---- композер (ввод) ---- */
+/* композер (ввод) */
 .composer-wrap{position:absolute; inset:0; z-index:30; display:grid; place-items:center; padding:24px; background:rgba(7,7,14,.72); backdrop-filter:blur(6px)}
 .composer{width:min(680px,100%); background:var(--surface); border:1px solid var(--line-2); border-radius:20px; padding:22px; box-shadow:var(--shadow)}
 .composer .ttl{font-family:Fraunces,serif;font-size:20px;margin-bottom:4px}
@@ -199,7 +195,7 @@ show{transform:translateX(-50%) translateY(0)}
   </header>
 
   <div class="work">
-    <!-- СЦЕНА ГРАФА -->
+    <!-- сцена графа -->
     <div class="stage">
       <div class="toolbar hidden" id="toolbar">
         <div class="seg" id="modeSeg">
@@ -231,7 +227,7 @@ show{transform:translateX(-50%) translateY(0)}
       <div class="inspector hidden" id="inspector"></div>
     </div>
 
-    <!-- САЙДБАР РЕЗУЛЬТАТА -->
+    <!-- сайдбар результата -->
     <aside class="side" id="side">
       <div class="card" style="border-style:dashed;text-align:center;color:var(--faint)">
         <div style="font-size:13px;line-height:1.55">Ответ, ключевые факты, путь рассуждения и структурная схема появятся здесь после разбора.</div>
@@ -240,7 +236,7 @@ show{transform:translateX(-50%) translateY(0)}
   </div>
 </div>
 
-<!-- КОМПОЗЕР -->
+<!-- композер -->
 <div class="composer-wrap" id="composerWrap">
   <div class="composer" id="composer">
     <div class="ttl">Разобрать текст</div>
@@ -267,18 +263,14 @@ show{transform:translateX(-50%) translateY(0)}
 <div class="toast" id="toast"></div>
 
 <script>
-/* ============================================================================
- *  КОНФИГ
- *  Бэкенд Lumina — FastAPI (uvicorn main:app), возвращает результат run_pipeline.
- *  Точный маршрут в репозитории не виден (main.py лежит только как .pyc), поэтому
- *  задаётся здесь. По умолчанию — сервис на Render из render.yaml (name: lum-api).
- *  Если маршрут другой — поменяй API_URL или нажми «изменить» в композере.
- *  Ожидается: POST JSON {text, query} → JSON результата run_pipeline.
- * ========================================================================== */
+/* Бэкенд Lumina: FastAPI (uvicorn main:app), отдаёт результат run_pipeline.
+   Точный маршрут в репозитории не виден (main.py лежит только как .pyc), поэтому адрес задан тут.
+   По умолчанию это сервис на Render из render.yaml (name: lum-api). Если маршрут другой,
+   поменяй API_URL или нажми «изменить» в композере. Ожидается POST с JSON {text, query}. */
 let API_URL = "https://lum-api.onrender.com/analyze";
 </script>
 
-<!-- ── движок графа ─────────────────────────────────────────────────────── -->
+<!-- движок графа -->
 <script>
 const LuminaGraph = (function(){
 
@@ -390,7 +382,7 @@ function applyLbl(){ if(!eDS)return; eDS.update(eDS.get().map(e=>({id:e.id,label
 })();
 </script>
 
-<!-- ── приложение ───────────────────────────────────────────────────────── -->
+<!-- приложение -->
 <script>
 function __bootLumina(){
 const $=s=>document.querySelector(s);
@@ -417,7 +409,7 @@ const graph = LuminaGraph.mount($('#graph'), {
   onBlank: ()=>el.inspector.classList.add('hidden'),
 });
 
-/* ---------- рендер результата ---------- */
+/* рендер результата */
 function renderResult(res){
   el.stageEmpty.classList.add('hidden');
   el.toolbar.classList.remove('hidden');
@@ -495,7 +487,7 @@ function showInspector(n){
   $('#inspX').addEventListener('click',()=>el.inspector.classList.add('hidden'));
 }
 
-/* ---------- загрузка (этапы пайплайна) ---------- */
+/* загрузка (этапы пайплайна) */
 const STEPS=[
   ['Режу текст на чанки','1'],['Извлекаю сущности и связи','2'],['Строю граф и векторы','3'],
   ['Собираю глобальную память','4'],['Векторный поиск top-k','5'],['Генерирую ответ и схему','6'],
@@ -536,7 +528,7 @@ function showError(msg){
   $('#errDemo').addEventListener('click',()=>{ box.classList.add('hidden'); runDemo(); });
 }
 
-/* ---------- запуск разбора ---------- */
+/* запуск разбора */
 async function runAnalyze(){
   const text=el.textIn.value.trim(), query=el.queryIn.value.trim();
   if(text.length<40){ toast('Добавь побольше текста для разбора (хотя бы пару абзацев).'); return; }
@@ -564,14 +556,14 @@ function finishOK(data){
   renderResult(data);
 }
 
-/* ---------- демо (без бэкенда) ---------- */
+/* демо (без бэкенда) */
 function runDemo(){
   el.textIn.value=DEMO_TEXT; el.queryIn.value=DEMO.query;
   showLoader();
   setTimeout(()=>finishOK(DEMO), 2600);   // короткая имитация прогона
 }
 
-/* ---------- события ---------- */
+/* события */
 el.runBtn.addEventListener('click',runAnalyze);
 el.demoBtn.addEventListener('click',runDemo);
 el.queryIn.addEventListener('keydown',e=>{ if(e.key==='Enter')runAnalyze(); });
@@ -594,7 +586,7 @@ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded'
 else __bootLumina();
 </script>
 
-<!-- ── демо-данные (форма run_pipeline) ─────────────────────────────────── -->
+<!-- демо-данные в формате run_pipeline -->
 <script>
 const DEMO_TEXT="Химическая связь возникает из-за перераспределения электронов между атомами. "+
 "Когда разность электроотрицательностей велика, электрон почти полностью переходит от одного атома к другому — "+

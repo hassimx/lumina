@@ -1,14 +1,13 @@
 """
-Lum / Lumina — FastAPI-обёртка над GraphRAG пайплайном.
+Lumina: FastAPI-обёртка над GraphRAG-пайплайном.
 
-Запуск локально:
-    uvicorn main:app --reload --port 8000
+Локальный запуск: uvicorn main:app --reload --port 8000
 
 Эндпоинты:
-    GET  /                — health-check (жив ли сервис)
-    GET  /api/health      — детальная проверка (задан ли ключ, какие модели)
-    POST /api/analyze     — полный прогон пайплайна по тексту + запросу
-    POST /api/extract     — извлечь текст из загруженного PDF (парсинг на бэке)
+    GET  /              проверка, что сервис жив
+    GET  /api/health    задан ли ключ и какие модели используются
+    POST /api/analyze   текст и вопрос на входе, результат пайплайна на выходе
+    POST /api/extract   достаёт текст из загруженного PDF
 """
 
 import io
@@ -25,10 +24,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ─── CORS ─────────────────────────────────────────────────────────────────────
-# ALLOWED_ORIGINS в env — список доменов фронта через запятую.
-# Пример: "https://lumina.uz,https://lum.pages.dev"
-# Для локальной разработки по умолчанию открыто всё ("*").
+# CORS: домены фронта берём из ALLOWED_ORIGINS через запятую,
+# например "https://lumina.uz,https://lum.pages.dev".
+# Без переменной открыто для всех ("*"), для локальной разработки так удобно.
 _origins_env = os.environ.get("ALLOWED_ORIGINS", "*")
 _allowed_origins = ["*"] if _origins_env.strip() == "*" else [
     o.strip() for o in _origins_env.split(",") if o.strip()
@@ -43,20 +41,19 @@ app.add_middleware(
 )
 
 
-# ─── СХЕМЫ ЗАПРОСА/ОТВЕТА ─────────────────────────────────────────────────────
+# схемы запросов
 
 class AnalyzeRequest(BaseModel):
     text: str = Field(..., min_length=1, description="Текст для анализа")
     query: str = Field(..., min_length=1, description="Вопрос пользователя")
 
 
-# ─── PDF ──────────────────────────────────────────────────────────────────────
-# Лимит на размер загружаемого PDF (в байтах). Парсим PDF на бэке (надёжнее, чем
-# в браузере) и отдаём фронту чистый текст, который дальше идёт в /api/analyze.
+# максимальный размер PDF в байтах. PDF разбираем на бэке, так надёжнее, чем в браузере:
+# фронт получает чистый текст и шлёт его в /api/analyze
 MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", str(15 * 1024 * 1024)))  # 15 МБ
 
 
-# ─── ЭНДПОИНТЫ ────────────────────────────────────────────────────────────────
+# эндпоинты
 
 @app.get("/")
 def root():
@@ -77,25 +74,22 @@ def health():
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
-    """
-    Прогоняет текст + вопрос через GraphRAG и возвращает:
-      answer, schema, graph (с флагами in_answer), explanation, stats.
-    """
+    """Прогоняет текст и вопрос через GraphRAG. Что лежит в ответе, описано в core.run_pipeline."""
     try:
         return core.run_pipeline(text=req.text, query=req.query)
     except core.PipelineError as e:
-        # Ожидаемые ошибки пайплайна (пустой ввод, нет ключа, Gemini упал) → 400
+        # ожидаемые ошибки (пустой ввод, нет ключа, Gemini упал) отдаём как 400
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Непредвиденное → 500, но без утечки внутренних деталей наружу
+        # всё остальное отдаём как 500, подробности наружу не показываем
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка: {type(e).__name__}")
 
 
 @app.post("/api/extract")
 async def extract_pdf(file: UploadFile = File(...)):
     """
-    Принимает PDF, возвращает извлечённый текст: {text, chars, pages}.
-    Парсинг на бэке надёжнее браузерного; фронт затем шлёт text в /api/analyze.
+    Принимает PDF и возвращает текст: {text, chars, pages}.
+    Дальше фронт шлёт этот text в /api/analyze.
     """
     filename = (file.filename or "").lower()
     is_pdf = filename.endswith(".pdf") or file.content_type == "application/pdf"
@@ -112,7 +106,7 @@ async def extract_pdf(file: UploadFile = File(...)):
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(raw))
-        # PDF с пустым паролем — пробуем открыть; иначе честно сообщаем.
+        # пробуем открыть с пустым паролем, если не вышло, говорим об этом
         if reader.is_encrypted:
             try:
                 reader.decrypt("")
